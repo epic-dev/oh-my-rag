@@ -7,7 +7,7 @@ about them with a local LLM. No API keys, no cloud calls.
 ## How it works
 
 ```
-data/incoming/*.txt|.md|.mdx
+data/incoming/*.txt|.md
   -> documents_loader.load()
   -> build_chunks.build_chunks_from_docs()      (token-based chunking, tiktoken)
   -> build_embeddings.chunks_to_embeddings()    (sentence-transformers, local)
@@ -22,17 +22,6 @@ runners/cli.py:
   write your own (web endpoint, Slack bot, ...) against the same Rag class.
 ```
 
-The package is split into three decoupled layers so you can swap or reuse
-any one of them independently:
-- **the database** — `documents_loader.py`, `build_chunks.py`,
-  `build_embeddings.py`, `seed_database.py`: everything involved in building
-  and updating the Chroma index.
-- **the rag** — `rag.py`: a `Rag` class with no CLI/I/O concerns
-  (`retrieve()`, `build_prompt()`, `ask_llm()`, `answer()`), safe to
-  construct and reuse from any front-end.
-- **the chat** — `runners/`: front-ends that drive a `Rag` instance.
-  `runners/cli.py` ships a terminal chat; nothing stops you from adding
-  `runners/web.py` or your own package that depends on `oh_my_rag.rag.Rag`.
 
 ## Requirements
 
@@ -57,7 +46,7 @@ uv run python -m oh_my_rag.embeddings_model_loader
 
 **3. Add your documents**
 
-Drop `.txt` / `.md` / `.mdx` files into `data/incoming/`.
+Drop `.txt` / `.md` files into `data/incoming/`.
 
 **4. Seed the database** (chunk + embed + index into Chroma)
 ```bash
