@@ -18,7 +18,7 @@ INDEXING  (uv run oh-my-rag)
         │  build_chunks.build_chunks_from_docs()
         ▼
   text chunks
-        │  build_embeddings.chunks_to_embeddings()
+        │  Chroma builds it on injesting docs
         ▼
   vectors  ──────────────────►  Chroma collection (./chromadb_base)
 
