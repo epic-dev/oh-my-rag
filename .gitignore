@@ -11,3 +11,4 @@ wheels/
 
 chromadb_base/
 chunks.pkl
+data/incoming

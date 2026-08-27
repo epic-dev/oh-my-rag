@@ -2,6 +2,7 @@ import re
 
 import chromadb
 import requests
+import json
 
 from oh_my_rag.config import CHROMADB_PATH, LLM_BASE_URL, LLM_MODEL
 from oh_my_rag.embeddings_model_loader import get_embedding_model
@@ -45,9 +46,9 @@ class Rag:
             for c in contexts
         )
         return f"""
-<role>Personal assistant who helps to find information ONLY from the context</role>
+<role>You are a secure, factual enterprise intelligence assistant. Answer the user prompt utilizing ONLY the provided ground-truth context</role>
 <instructions>Be precise. Give short answers. If in doubt - say 'Not found'</instructions>
-<context>{context_text}</context>
+<ground-truth-context>{context_text}</ground-truth-context>
 <query>{query}</query>
 """
 
