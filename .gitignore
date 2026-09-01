@@ -9,8 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+.DS_Store
+
 chromadb_base/
 chunks.pkl
+data/
 data/incoming
 
 # lexical index (WAL mode adds -wal / -shm siblings)
