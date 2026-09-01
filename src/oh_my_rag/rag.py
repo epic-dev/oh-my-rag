@@ -1,13 +1,17 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from oh_my_rag.config import (
     CHROMADB_PATH,
     EXPANSION_ENABLED,
     LLM_BASE_URL,
+    LLM_MAX_TOKENS,
     LLM_MODEL,
+    LLM_REASONING_EFFORT,
     TOP_K,
 )
-from oh_my_rag.llm_client import chat
+from oh_my_rag.llm_client import chat, chat_stream
+from oh_my_rag.observability import Trace
 from oh_my_rag.query_expansion import ExpandedQuery, expand
 from oh_my_rag.search.fts import FtsIndex
 from oh_my_rag.search.hybrid import HybridSearch
@@ -25,6 +29,7 @@ class RagResult:
     contexts: list[FusedHit]
     prompt: str
     answer: str
+    trace: Trace | None = None
 
 
 class Rag:
@@ -49,13 +54,20 @@ class Rag:
 
         self.search = HybridSearch(vector=vector, fts=FtsIndex(), top_k=top_k)
 
-    def expand_query(self, query: str, expand_queries: bool | None = None) -> ExpandedQuery:
+    def expand_query(
+        self,
+        query: str,
+        expand_queries: bool | None = None,
+        trace: Trace | None = None,
+    ) -> ExpandedQuery:
         enabled = self.expand_queries if expand_queries is None else expand_queries
-        return expand(
-            query,
-            base_url=self.llm_base_url,
-            enabled=enabled,
-        )
+        if trace is None:
+            return expand(query, base_url=self.llm_base_url, enabled=enabled)
+
+        with trace.stage("expansion"):
+            expanded = expand(query, base_url=self.llm_base_url, enabled=enabled)
+        trace.expansion_reason = expanded.reason
+        return expanded
 
     def retrieve(
         self,
@@ -68,15 +80,18 @@ class Rag:
         )
 
     def search_expanded(
-        self, expanded: ExpandedQuery, top_k: int | None = None
+        self,
+        expanded: ExpandedQuery,
+        top_k: int | None = None,
+        trace: Trace | None = None,
     ) -> list[FusedHit]:
         if top_k is None:
-            return self.search.search(expanded)
+            return self.search.search(expanded, trace=trace)
 
         original = self.search.top_k
         self.search.top_k = top_k
         try:
-            return self.search.search(expanded)
+            return self.search.search(expanded, trace=trace)
         finally:
             self.search.top_k = original
 
@@ -100,21 +115,71 @@ class Rag:
             [{"role": "user", "content": prompt}],
             base_url=self.llm_base_url,
             model=self.llm_model,
+            max_tokens=LLM_MAX_TOKENS,
+            reasoning_effort=LLM_REASONING_EFFORT,
+            kind="answer",
+        )
+
+    def prepare(
+        self,
+        query: str,
+        expand_queries: bool | None = None,
+        trace: bool = False,
+    ) -> RagResult:
+        """Everything up to generation. `answer` is empty.
+
+        Split out so a caller can show retrieval *before* streaming the answer,
+        which is the whole point of an observable pipeline.
+        """
+        record = Trace(query=query) if trace else None
+        expanded = self.expand_query(query, expand_queries, trace=record)
+        contexts = self.search_expanded(expanded, trace=record)
+        prompt = self.build_prompt(query, contexts)
+        if record is not None:
+            record.prompt_chars = len(prompt)
+        return RagResult(
+            query=query,
+            expanded=expanded,
+            contexts=contexts,
+            prompt=prompt,
+            answer="",
+            trace=record,
         )
 
     def answer(self, query: str, expand_queries: bool | None = None) -> str:
         return self.answer_verbose(query, expand_queries=expand_queries).answer
 
     def answer_verbose(
-        self, query: str, expand_queries: bool | None = None
+        self,
+        query: str,
+        expand_queries: bool | None = None,
+        trace: bool = False,
     ) -> RagResult:
-        expanded = self.expand_query(query, expand_queries)
-        contexts = self.search_expanded(expanded)
-        prompt = self.build_prompt(query, contexts)
-        return RagResult(
-            query=query,
-            expanded=expanded,
-            contexts=contexts,
-            prompt=prompt,
-            answer=self.ask_llm(prompt),
+        result = self.prepare(query, expand_queries, trace=trace)
+        if result.trace is not None:
+            with result.trace.stage("generation"):
+                result.answer = self.ask_llm(result.prompt)
+            result.trace.answer_chars = len(result.answer)
+        else:
+            result.answer = self.ask_llm(result.prompt)
+        return result
+
+    def stream_answer(self, prompt: str) -> Iterator[str]:
+        """Yield the answer as it is generated."""
+        return chat_stream(
+            [{"role": "user", "content": prompt}],
+            base_url=self.llm_base_url,
+            model=self.llm_model,
+            max_tokens=LLM_MAX_TOKENS,
+            reasoning_effort=LLM_REASONING_EFFORT,
+            # With reasoning off there is no scratchpad to guard against, so the
+            # first token can go out immediately. Otherwise hold a window back
+            # so a leading orphan </think> can still be caught.
+            probation=0 if LLM_REASONING_EFFORT == "none" else 400,
+            kind="answer",
         )
+
+    def answer_stream(
+        self, query: str, expand_queries: bool | None = None
+    ) -> Iterator[str]:
+        yield from self.stream_answer(self.prepare(query, expand_queries).prompt)

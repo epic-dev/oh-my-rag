@@ -60,18 +60,25 @@ Anything that writes an index goes through `seed_database.index_chunks()`, so se
 ### Embeddings — keep both sides symmetric
 
 Both pipelines embed **client-side, with the same model**, via
-`embeddings_model_loader.get_embedding_model()` (`EMBEDDING_MODEL`, `BAAI/bge-small-en-v1.5`,
-384-dim, `local_files_only`). Two invariants that are easy to break silently:
+`embeddings_model_loader.get_embedding_model()` (`EMBEDDING_MODEL`, currently
+`Qwen/Qwen3-Embedding-0.6B`, 1024-dim, `local_files_only`). Two invariants that are easy to
+break silently:
 
 - **Never pass `documents=` to `upsert()` without `embeddings=`.** Chroma then falls back to
-  its own bundled default model (ONNX all-MiniLM-L6-v2) — also 384-dim, so nothing raises,
-  the vectors just land in a different space and retrieval quietly degrades. The collection's
-  stored config is `{}` (no embedding function baked in), and it should stay that way.
+  its own bundled default model (ONNX all-MiniLM-L6-v2). At 384-dim that now trips a
+  dimension mismatch against a 1024-dim collection — but it was silent back when
+  `EMBEDDING_MODEL` was also 384-dim, and would be silent again for any 384-dim model. The
+  collection's stored config is `{}` (no embedding function baked in); keep it that way.
 - **Both sides pass `normalize_embeddings=True`.** The vector index uses the l2 space, which
-  ranks identically to cosine only for normalized vectors — and bge models are trained for cosine.
+  ranks identically to cosine only for normalized vectors — and both bge-* and
+  Qwen3-Embedding are trained for cosine.
 
-`search.vector.QUERY_PREFIX` ("Represent this sentence for searching relevant passages: ") is
-bge's query-side convention and is deliberately *not* applied to documents.
+`config.EMBEDDING_QUERY_PREFIX` is the query-side instruction and is deliberately *not*
+applied to documents. It belongs to `EMBEDDING_MODEL` — each family words it differently
+(Qwen3-Embedding's is copied verbatim from its `config_sentence_transformers.json`, and has
+no space after `Query:`; bge wants `"Represent this sentence for searching relevant
+passages: "`). A mismatch degrades retrieval silently. Change both together, then
+`--rebuild` — the dimension change makes it mandatory anyway.
 
 ### Full-text search
 
@@ -86,6 +93,70 @@ error instead of quiet degradation.
 - Porter stemming merges inflections (`retrieve`/retrieving, `policy`/policies) and some
   derivations (`retrieval`, `connection`, `computation`) but **not** `accrual`, `deployment`,
   `runner`, `policing`. Prompt for base nouns.
+
+### Reasoning-model output needs scrubbing
+
+`llm_client.strip_control_tokens()` handles three `<think>` shapes, all seen in practice:
+a matched pair, an **orphan close** (`reasoning</think>answer` — the opener never arrived,
+so everything before the tag is scratchpad), and an orphan open (truncated mid-thought).
+Tags are matched case-insensitively and tolerate whitespace inside the brackets, because a
+4-bit model does not reproduce them reliably. Order matters: complete blocks first.
+
+Always send `max_tokens`. mlx-lm defaults to **512** completion tokens when the request
+omits it, which silently truncates answers — and the `<think>` block spends part of that
+budget before the answer starts. `LLM_MAX_TOKENS` covers the answer path,
+`EXPANSION_MAX_TOKENS` the expansion call.
+
+**Reasoning shares the `max_tokens` budget.** This is the trap when swapping in a bigger
+reasoning model: at `EXPANSION_MAX_TOKENS = 200`, qwen3.5:9b spent all 200 tokens thinking
+and returned *empty* content, so every expansion fell back. Neither `think=False` nor
+`/no_think` is honoured on Ollama's OpenAI endpoint — `reasoning_effort` is
+(`EXPANSION_REASONING_EFFORT`, `LLM_REASONING_EFFORT`). `llm_client.chat()` sends the field
+only when set, so backends that don't know it are unaffected.
+
+### Backends
+
+`LLM_BASE_URL` targets any OpenAI-compatible `/chat/completions`. Ollama and mlx-lm both
+serve that on `:11434`, so switching is one constant — `LLM_MODEL` — set to `ollama list`
+naming (`qwen3.5:9b`) or an mlx-community repo id. Only one can hold the port.
+
+Ollama returns a reasoning model's scratchpad in a separate `message.reasoning` field, so
+`content` arrives clean; mlx-lm inlines it as `<think>` tags. `strip_control_tokens` handles
+the inline case and is a harmless no-op for the other.
+
+### Observability and streaming
+
+`observability.Trace` is **data, never formatting** — timings, per-branch ranked lists, the
+FTS MATCH expression and its pre-LIMIT candidate count, the fused result. `runners/cli.py`
+renders it; MCP or a web frontend could consume the same object. Keep rendering out of it.
+
+Tracing is opt-in: `Rag.prepare(query, trace=True)`. `HybridSearch.search` passes `branch=`
+to the lexical retriever **only while tracing**, so a retriever implementing the minimal
+`search(terms, limit)` contract still works — do not make it a required positional.
+
+`Rag.prepare()` / `Rag.stream_answer()` are split so a caller can show retrieval *before*
+generation starts. `llm_client.chat_stream()` scrubs reasoning incrementally via
+`StreamScrubber`: it never emits past a trailing `<` that could begin a tag, so a tag split
+across deltas is safe. Its one gap is an orphan `</think>` arriving after text is already
+printed — `probation` buffers the opening N characters to catch it, and `Rag` sets
+`probation=0` when `LLM_REASONING_EFFORT == "none"` because then no scratchpad exists.
+`delta.reasoning` is ignored, matching the non-streaming path.
+
+### The usage log
+
+`usage_log.UsageLog` appends every LLM call to `./llm_usage.sqlite3` — its own database, so
+rotating it never touches the retrieval indexes. Recorded from `llm_client.chat()` and
+`chat_stream()`, the single choke point every call passes through, so a new caller is logged
+automatically; it only needs to pass `kind=`.
+
+- **Logging must never break a query.** `record()` swallows everything and warns on stderr.
+- **Failures are logged too**, before the exception propagates — a timeout or refused
+  connection is exactly the traffic worth having a record of.
+- **`chat_stream` sends `stream_options={"include_usage": True}`.** An SSE stream carries no
+  usage block otherwise, and the usage chunk arrives last with no `choices`.
+- Token counts are `NULL` when the server reports none; `prompt_chars` is always recorded.
+- `messages_sent` is the request's message count, not conversation turns: **answering sends
+  1, expansion sends 2** (system + user). Both are single-turn.
 
 ### Degradation is a feature, not an accident
 

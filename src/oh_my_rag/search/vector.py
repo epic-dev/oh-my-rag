@@ -1,12 +1,8 @@
 import chromadb
 
-from oh_my_rag.config import CANDIDATE_K, CHROMADB_PATH
+from oh_my_rag.config import CANDIDATE_K, CHROMADB_PATH, EMBEDDING_QUERY_PREFIX
 from oh_my_rag.embeddings_model_loader import get_embedding_model
 from oh_my_rag.search.types import SearchHit
-
-# bge's query-side convention. Deliberately *not* applied to documents — the
-# indexing side embeds their raw text.
-QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 class VectorSearch:
@@ -45,9 +41,11 @@ class VectorSearch:
             return []
 
         # Same model and normalization as the indexing side; l2 on normalized
-        # vectors ranks identically to cosine, which is what bge expects.
+        # vectors ranks identically to cosine, which is what both bge-* and
+        # Qwen3-Embedding are trained for.
+        # The prefix is query-side only — documents are embedded raw.
         embeddings = get_embedding_model().encode(
-            [QUERY_PREFIX + q for q in queries],
+            [EMBEDDING_QUERY_PREFIX + q for q in queries],
             normalize_embeddings=True,
         )
 

@@ -1,4 +1,5 @@
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from oh_my_rag.config import (
@@ -54,15 +55,29 @@ class HybridSearch:
             print(f"[search] {branch} branch failed, continuing without it: {exc}", file=sys.stderr)
             return default
 
-    def search(self, expanded) -> list[FusedHit]:
+    def search(self, expanded, trace=None) -> list[FusedHit]:
         queries = expanded.vector_queries()
         terms = expanded.fts_terms()
 
-        f_vec = self._pool.submit(self.vector.search, queries, self.candidate_k)
-        f_fts = self._pool.submit(self.fts.search, terms, self.candidate_k)
+        lex_branch = None
+        if trace is not None:
+            from oh_my_rag.observability import BranchTrace
 
+            lex_branch = BranchTrace(name="fts", weight=RRF_WEIGHT_FTS)
+
+        # Passed only while tracing, so a retriever implementing the minimal
+        # search(terms, limit) contract still works.
+        lex_kwargs = {"branch": lex_branch} if lex_branch is not None else {}
+
+        started = time.perf_counter()
+        f_vec = self._pool.submit(self.vector.search, queries, self.candidate_k)
+        f_fts = self._pool.submit(self.fts.search, terms, self.candidate_k, **lex_kwargs)
+
+        vec_started = time.perf_counter()
         vector_lists: list[list[SearchHit]] = self._settle(f_vec, "vector", [])
+        vec_ms = (time.perf_counter() - vec_started) * 1000
         fts_hits: list[SearchHit] = self._settle(f_fts, "fts", [])
+        wall_ms = (time.perf_counter() - started) * 1000
 
         ranked = []
         for i, hits in enumerate(vector_lists):
@@ -77,4 +92,32 @@ class HybridSearch:
             )
         ranked.append(RankedList(name="fts", hits=fts_hits, weight=RRF_WEIGHT_FTS))
 
-        return reciprocal_rank_fusion(ranked, top_k=self.top_k)
+        fused = reciprocal_rank_fusion(ranked, top_k=self.top_k)
+
+        if trace is not None:
+            from oh_my_rag.observability import BranchTrace
+
+            for i, rl in enumerate(ranked[:-1]):
+                trace.branches.append(
+                    BranchTrace(
+                        name=rl.name,
+                        weight=rl.weight,
+                        # One batched call covers every variant, so the elapsed
+                        # time belongs to the branch, not to any one phrasing.
+                        ms=vec_ms if i == 0 else 0.0,
+                        hits=rl.hits,
+                        query=queries[i] if i < len(queries) else None,
+                        failed=not rl.hits and not vector_lists,
+                    )
+                )
+            if lex_branch is not None:
+                lex_branch.hits = fts_hits
+                trace.branches.append(lex_branch)
+            trace.record("  retrieval (both branches, concurrent)", wall_ms)
+            trace.fused = fused
+            if not vector_lists:
+                trace.warn("dense branch returned nothing")
+            if not fts_hits:
+                trace.warn("lexical branch returned nothing")
+
+        return fused

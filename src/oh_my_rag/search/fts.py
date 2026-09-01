@@ -185,7 +185,9 @@ class FtsIndex:
 
     # --- reads ---------------------------------------------------------------
 
-    def search(self, terms: list[str], limit: int = CANDIDATE_K) -> list[SearchHit]:
+    def search(
+        self, terms: list[str], limit: int = CANDIDATE_K, branch=None
+    ) -> list[SearchHit]:
         """Rank chunks against a set of terms, best first.
 
         Never raises on bad input: a malformed expression or a term set that
@@ -193,6 +195,8 @@ class FtsIndex:
         cost the lexical half of a search, never the whole query.
         """
         expr = build_match_expr(terms)
+        if branch is not None:
+            branch.detail = expr or "(no usable terms)"
         if not expr:
             return []
 
@@ -209,7 +213,21 @@ class FtsIndex:
             ).fetchall()
         except sqlite3.OperationalError as exc:
             print(f"[fts] query failed, skipping lexical branch: {exc}", file=sys.stderr)
+            if branch is not None:
+                branch.failed = True
+                branch.detail = f"{expr}  -> {exc}"
             return []
+
+        if branch is not None:
+            # How much of the corpus the expression actually matched, before
+            # LIMIT — the number that tells you whether the keywords were
+            # selective or matched half the index.
+            try:
+                branch.candidates = self._conn().execute(
+                    "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH ?", (expr,)
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                pass
 
         return [
             SearchHit(chunk_uid=uid, src=src, text=text, score=float(score), rank=rank)

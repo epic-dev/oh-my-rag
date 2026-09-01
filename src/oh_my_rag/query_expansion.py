@@ -9,6 +9,7 @@ from oh_my_rag.config import (
     EXPANSION_MODEL,
     EXPANSION_MAX_TOKENS,
     EXPANSION_NO_THINK,
+    EXPANSION_REASONING_EFFORT,
     EXPANSION_TIMEOUT,
     LLM_BASE_URL,
 )
@@ -172,6 +173,7 @@ def expand(
     timeout: float = EXPANSION_TIMEOUT,
     enabled: bool = EXPANSION_ENABLED,
     no_think: bool = EXPANSION_NO_THINK,
+    reasoning_effort: str | None = EXPANSION_REASONING_EFFORT,
 ) -> ExpandedQuery:
     """STEP 1, with STEP 6 built in.
 
@@ -198,6 +200,8 @@ def expand(
             timeout=timeout,
             temperature=0,
             max_tokens=EXPANSION_MAX_TOKENS,
+            reasoning_effort=reasoning_effort,
+            kind="expansion",
         )
     except Exception as exc:
         return _fallback(query, f"{type(exc).__name__}: {exc}")

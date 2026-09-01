@@ -49,7 +49,7 @@ def index_chunks(chunks: list[Chunk], collection=None, fts: FtsIndex | None = No
     # Embed here rather than letting Chroma fall back to its bundled default
     # model: queries are embedded with EMBEDDING_MODEL, and both sides have to
     # live in the same vector space. Normalized, so the collection's l2 space
-    # ranks the same as cosine (what bge-* models are trained for).
+    # ranks the same as cosine (what bge-* and Qwen3-Embedding are trained for).
     embeddings = get_embedding_model().encode(
         texts,
         normalize_embeddings=True,

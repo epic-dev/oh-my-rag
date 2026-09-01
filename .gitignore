@@ -17,3 +17,8 @@ data/incoming
 fts_index.sqlite3
 fts_index.sqlite3-wal
 fts_index.sqlite3-shm
+
+# LLM usage log
+llm_usage.sqlite3
+llm_usage.sqlite3-wal
+llm_usage.sqlite3-shm

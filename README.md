@@ -45,10 +45,14 @@ is used, and if either retriever dies the other still answers. See
 
 - Python >= 3.14
 - [uv](https://docs.astral.sh/uv/)
-- A local OpenAI-compatible LLM server. `scripts/start_llm_server.sh` uses
-  [mlx-lm](https://github.com/ml-explore/mlx-examples) (macOS + Apple Silicon
-  only) — point `LLM_BASE_URL` in `config.py` at anything else (e.g. Ollama)
-  if you're not on Apple Silicon.
+- A local OpenAI-compatible LLM server. Either works, both serve `:11434`:
+  - **[Ollama](https://ollama.com)** (any platform) — `ollama pull qwen3.5:9b`,
+    then set `LLM_MODEL = "qwen3.5:9b"` (use the name from `ollama list`).
+  - **[mlx-lm](https://github.com/ml-explore/mlx-examples)** (macOS + Apple
+    Silicon) — `./scripts/start_llm_server.sh`, and set `LLM_MODEL` to the
+    mlx-community repo id.
+
+  Only `LLM_MODEL` changes between them; `LLM_BASE_URL` is the same.
 
 ## Quickstart
 
@@ -75,20 +79,41 @@ uv run oh-my-rag
 - `--from-cache` — currently parsed but ignored; see *Known gaps* in
   [HOW_IT_WORKS.md](HOW_IT_WORKS.md)
 
-**5. Start a local LLM server** (Apple Silicon, via mlx-lm)
+**5. Start a local LLM server**
 ```bash
-uv tool install mlx-lm   # once
+# Ollama (runs as a service; nothing to start by hand)
+ollama pull qwen3.5:9b        # then set LLM_MODEL = "qwen3.5:9b"
+
+# or mlx-lm on Apple Silicon
+uv tool install mlx-lm        # once
 ./scripts/start_llm_server.sh
 ```
-Serves an OpenAI-compatible API on `http://localhost:11434/v1`.
+Either serves an OpenAI-compatible API on `http://localhost:11434/v1`. Only one can
+hold the port at a time.
 
 **6. Chat with your documents**
 ```bash
 uv run oh-my-rag-chat
-uv run oh-my-rag-chat --debug       # show the expansion, which retriever found what, and the fused ranking
+uv run oh-my-rag-chat --debug       # full trace: expansion, each retriever's ranking, the fusion arithmetic, timings
+uv run oh-my-rag-chat --debug --show 10   # list 10 hits per retriever instead of 5
 uv run oh-my-rag-chat --no-expand   # skip the expansion call, search the question as typed
+uv run oh-my-rag-chat --no-stream   # wait for the whole answer instead of streaming it
 ```
-Type a question, `/exit` or `/quit` to leave.
+Type a question, `/exit` or `/quit` to leave. The answer streams by default.
+
+`--debug` shows where the time actually goes, which is usually not where you expect:
+
+```
+── expansion ───────────────────────────────── 3.82s
+── retrieval ──────────────────── 219ms wall, 2 threads
+  vector       weight=1.0  20 hits   "What does PACELC add that CAP leaves out?"
+  fts          weight=1.0  20 hits   29 chunk(s) matched before LIMIT 20
+── fusion ──────────────────────────── RRF k=60 → top 5
+  1. cap-theorem-vs-pacelc.md::2    0.05537
+       = vector@1 (0.01639) + fts@1 (0.01639) + vector_alt1@2 (0.01129)
+── answer ──────────────────────────────── streaming
+  first token 17.68s  ·  332 chars in 21.18s  ·  16 char/s
+```
 
 **7. (Optional) Serve the corpus over MCP**
 ```bash
@@ -104,6 +129,30 @@ claude mcp add oh-my-rag -- uv run oh-my-rag-mcp
 Tools: `list_docs`, `read_doc`, `write_doc` (writes *and* indexes immediately),
 `search_docs` (returns ranked passages, not a generated answer).
 
+## LLM usage log
+
+Every call to the LLM — expansion and answering, streamed or not, successful or failed — is
+appended to its own SQLite file, `./llm_usage.sqlite3` (gitignored, separate from the
+retrieval indexes so you can wipe it freely).
+
+```bash
+uv run python -m oh_my_rag.usage_log     # per-kind totals
+sqlite3 llm_usage.sqlite3 "SELECT * FROM llm_calls ORDER BY id DESC LIMIT 10;"
+```
+
+```
+kind       calls  failed  prompt_tokens  completion_tokens  avg_ms   avg_messages
+expansion  3      1       150            118                2749.0   2.0
+answer     3      1       4101           176                10254.0  1.0
+```
+
+Columns: `ts`, `kind`, `model`, `base_url`, `streamed`, `messages_sent`, `prompt_tokens`,
+`completion_tokens`, `total_tokens`, `prompt_chars`, `reply_chars`, `duration_ms`,
+`finish_reason`, `ok`, `error`.
+
+Token counts are `NULL` when the server does not report them; `prompt_chars` is always
+recorded, so a row is never useless. Set `USAGE_LOG_ENABLED = False` to turn it off.
+
 ## Configuration
 
 All settings live in `src/oh_my_rag/config.py`:
@@ -111,6 +160,8 @@ All settings live in `src/oh_my_rag/config.py`:
 | Setting | Purpose |
 |---|---|
 | `LLM_BASE_URL` / `LLM_MODEL` | Full chat-completions endpoint URL (e.g. `http://localhost:11434/v1/chat/completions`) and model id |
+| `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | Answer-call timeout, and the completion cap (mlx-lm defaults to only 512, which truncates answers) |
+| `LLM_REASONING_EFFORT` | `"none"` disables a reasoning model's scratchpad on the answer path. On qwen3.5:9b that is 23s vs 88s for equivalent answers |
 | `EMBEDDING_MODEL` | sentence-transformers model — must be downloaded locally first (`embeddings_model_loader.py`) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | Token-based chunk window/overlap (tiktoken `cl100k_base`) |
 | `CHROMADB_PATH` | Where the Chroma index is persisted |
@@ -120,6 +171,7 @@ All settings live in `src/oh_my_rag/config.py`:
 | `RRF_K` / `RRF_WEIGHT_*` | Fusion constant and the weight each ranked list carries |
 | `EXPANSION_*` | Query expansion: on/off, model, timeout, and the caps on its output |
 | `MCP_SERVER_NAME` / `MCP_HTTP_PORT` | MCP server identity and `--http` port |
+| `USAGE_DB_PATH` / `USAGE_LOG_ENABLED` | Where LLM calls are logged, and whether to log at all |
 
 Changing `LLM_MODEL` requires restarting the mlx-lm server with the new model.
 Changing `EMBEDDING_MODEL` requires re-downloading it and running
