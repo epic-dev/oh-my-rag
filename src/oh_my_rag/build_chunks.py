@@ -10,6 +10,13 @@ class Chunk:
     text: str
     src: Document
 
+    @property
+    def uid(self) -> str:
+        """Identity of this chunk in *both* stores — Chroma's id and FTS5's
+        chunk_uid. Fusion matches hits across the two on this string, so it is
+        defined here once and never rebuilt inline."""
+        return f"{self.src.path}::{self.chunk_id}"
+
 cl100k_base = tiktoken.get_encoding("cl100k_base")
 
 def build_chunks_from_text(text) -> list[str]:

@@ -12,3 +12,8 @@ wheels/
 chromadb_base/
 chunks.pkl
 data/incoming
+
+# lexical index (WAL mode adds -wal / -shm siblings)
+fts_index.sqlite3
+fts_index.sqlite3-wal
+fts_index.sqlite3-shm

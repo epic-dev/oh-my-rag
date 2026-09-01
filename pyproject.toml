@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "chromadb>=1.5.9",
+    "fastmcp>=3.4.7",
     "numpy>=2.5.2",
     "pathlib>=1.0.1",
     "requests>=2.32.0",
@@ -19,6 +20,8 @@ dependencies = [
 [project.scripts]
 oh-my-rag = "oh_my_rag:main"
 oh-my-rag-chat = "oh_my_rag.runners.cli:main"
+oh-my-rag-mcp = "oh_my_rag.mcp.server:main"
+oh-my-rag-mcp-call = "oh_my_rag.mcp.client:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
