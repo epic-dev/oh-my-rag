@@ -79,15 +79,35 @@ class ExpandedQuery:
 SYSTEM_PROMPT = """You expand search queries. Reply with exactly these 3 lines, nothing else:
 KEYWORDS: comma-separated key nouns from the question
 ALT1: the question, rephrased
-ALT2: the question, rephrased differently"""
+ALT2: the question, rephrased differently
+
+Example for "How do I reset my password?":
+KEYWORDS: password, reset, account recovery
+ALT1: What is the process for resetting a password?
+ALT2: How can a user regain access to an account?"""
 
 # Independent per line: a mangled ALT2 costs ALT2 and nothing else.
 _KEYWORDS_RE = re.compile(r"^[^\S\n]*KEYWORDS[^\S\n]*:[^\S\n]*(.+)$", re.IGNORECASE | re.MULTILINE)
 _ALT1_RE = re.compile(r"^[^\S\n]*ALT[^\S\n]*1[^\S\n]*:[^\S\n]*(.+)$", re.IGNORECASE | re.MULTILINE)
 _ALT2_RE = re.compile(r"^[^\S\n]*ALT[^\S\n]*2[^\S\n]*:[^\S\n]*(.+)$", re.IGNORECASE | re.MULTILINE)
 
+_SYSTEM_PROMPT_FOLDED = " ".join(SYSTEM_PROMPT.casefold().split())
+
 _MAX_KEYWORD_CHARS = 40
 _MAX_ALTERNATE_CHARS = 300
+
+
+def _is_template_echo(text: str) -> bool:
+    """Did the model copy the instructions instead of following them?
+
+    Small models answer this prompt with its own placeholders — `KEYWORDS:
+    comma-separated key nouns from the question`, `ALT1: the question,
+    rephrased` — or with the worked example's contents. Those parse cleanly and
+    look like a successful expansion while being pure noise, which is worse than
+    an honest fallback. Anything appearing verbatim in the prompt is rejected.
+    """
+    probe = " ".join(text.casefold().split())
+    return bool(probe) and probe in _SYSTEM_PROMPT_FOLDED
 
 
 def _clean_keywords(raw: str) -> list[str]:
@@ -99,7 +119,7 @@ def _clean_keywords(raw: str) -> list[str]:
             continue
         term = term[:_MAX_KEYWORD_CHARS]
         folded = term.casefold()
-        if folded in seen:
+        if folded in seen or _is_template_echo(term):
             continue
         seen.add(folded)
         out.append(term)
@@ -120,7 +140,7 @@ def _clean_alternates(raws: list[str], original: str) -> list[str]:
         folded = alt.casefold()
         # A paraphrase identical to the question adds a duplicate ranked list
         # and no recall.
-        if folded == original_folded or folded in seen:
+        if folded == original_folded or folded in seen or _is_template_echo(alt):
             continue
         seen.add(folded)
         out.append(alt)

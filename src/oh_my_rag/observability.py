@@ -33,6 +33,8 @@ class Trace:
     expansion_reason: str | None = None
     branches: list[BranchTrace] = field(default_factory=list)
     fused: list[FusedHit] = field(default_factory=list)
+    # The top-K as fusion ordered it, before the cross-encoder reordered it.
+    rerank_before: list[str] = field(default_factory=list)
     prompt_chars: int = 0
     answer_chars: int = 0
     warnings: list[str] = field(default_factory=list)

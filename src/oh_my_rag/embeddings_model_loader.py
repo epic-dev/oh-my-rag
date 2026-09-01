@@ -27,13 +27,26 @@ def get_embedding_model():
 
 
 def sync_model():
-    """Check the Hugging Face Hub for updates to EMBEDDING_MODEL and download
-    them if the local cache is missing or stale."""
+    """Check the Hugging Face Hub for updates to the local models and download
+    them if the cache is missing or stale.
+
+    Covers the reranker too, so one command prepares a fresh clone for both
+    retrieval and reranking.
+    """
     os.environ.pop("HF_HUB_OFFLINE", None)
     from sentence_transformers import SentenceTransformer
 
     print(f"Checking '{EMBEDDING_MODEL}' for updates...")
     SentenceTransformer(EMBEDDING_MODEL)
+
+    from oh_my_rag.config import RERANK_ENABLED, RERANK_MODEL
+
+    if RERANK_ENABLED:
+        from sentence_transformers import CrossEncoder
+
+        print(f"Checking '{RERANK_MODEL}' for updates...")
+        CrossEncoder(RERANK_MODEL)
+
     print("Local model cache is up to date.")
 
 

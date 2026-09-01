@@ -34,7 +34,8 @@ flowchart LR
         X --> F["lexical search"]
         V --> R["RRF fusion"]
         F --> R
-        R --> A["prompt → LLM → answer"]
+        R --> K["rerank<br/>cross-encoder"]
+        K --> A["prompt → LLM → answer"]
     end
 
     S1 -.-> V
@@ -126,33 +127,33 @@ while `accrual`, `deployment`, `runner` and `policing` do **not**. That is why
 
 ## Part 2 — Querying
 
-Entry points: `uv run oh-my-rag-chat` → [main (runners/cli.py:113)](src/oh_my_rag/runners/cli.py#L113) → [Rag.answer (rag.py:149)](src/oh_my_rag/rag.py#L149), or the MCP tool
+Entry points: `uv run oh-my-rag-chat` → [main (runners/cli.py:128)](src/oh_my_rag/runners/cli.py#L128) → [Rag.answer (rag.py:166)](src/oh_my_rag/rag.py#L166), or the MCP tool
 [search_docs (mcp/server.py:151)](src/oh_my_rag/mcp/server.py#L151).
 
-The full path is [Rag.answer_verbose (rag.py:152)](src/oh_my_rag/rag.py#L152): expand → search → prompt → generate, returning
-a [RagResult (rag.py:24)](src/oh_my_rag/rag.py#L24) that carries every intermediate value so `--debug` and MCP responses can
+The full path is [Rag.answer_verbose (rag.py:169)](src/oh_my_rag/rag.py#L169): expand → search → prompt → generate, returning
+a [RagResult (rag.py:25)](src/oh_my_rag/rag.py#L25) that carries every intermediate value so `--debug` and MCP responses can
 show their work.
 
 ### 2.1 Expand the question
 
-[expand (query_expansion.py:168)](src/oh_my_rag/query_expansion.py#L168) makes one LLM call asking for three tagged lines: comma-separated
+[expand (query_expansion.py:188)](src/oh_my_rag/query_expansion.py#L188) makes one LLM call asking for three tagged lines: comma-separated
 keywords, and two rephrasings. The system prompt at [SYSTEM_PROMPT (query_expansion.py:79)](src/oh_my_rag/query_expansion.py#L79) is
 deliberately three lines long — every extra instruction is another thing a 4-bit 1.7B model
 can drift on.
 
-The reply is parsed by [parse_expansion (query_expansion.py:150)](src/oh_my_rag/query_expansion.py#L150) using three **independent**
-regexes ([_KEYWORDS_RE (query_expansion.py:85)](src/oh_my_rag/query_expansion.py#L85) and the two `ALT` patterns), so a mangled `ALT2`
+The reply is parsed by [parse_expansion (query_expansion.py:170)](src/oh_my_rag/query_expansion.py#L170) using three **independent**
+regexes ([_KEYWORDS_RE (query_expansion.py:90)](src/oh_my_rag/query_expansion.py#L90) and the two `ALT` patterns), so a mangled `ALT2`
 costs you `ALT2` and nothing else.
 
 **The salvage path.** Qwen3-1.7B frequently answers with the right content in the wrong
 shape — `AP2, UCP` instead of `KEYWORDS: AP2, UCP`. Discarding that would cost the entire
-lexical branch, so [_looks_like_a_keyword_list (query_expansion.py:132)](src/oh_my_rag/query_expansion.py#L132) recognises a reply that is
+lexical branch, so [_looks_like_a_keyword_list (query_expansion.py:152)](src/oh_my_rag/query_expansion.py#L152) recognises a reply that is
 *structurally* a keyword list (short, comma-separated, no part long enough to be a sentence)
 and treats it as keywords. This took expansion success from 1-in-5 to 5-in-5 on the local
 model. Prose without commas is still rejected.
 
-Everything is then bounded by [_clean_keywords (query_expansion.py:93)](src/oh_my_rag/query_expansion.py#L93) and
-[_clean_alternates (query_expansion.py:111)](src/oh_my_rag/query_expansion.py#L111): keywords deduped and capped at
+Everything is then bounded by [_clean_keywords (query_expansion.py:113)](src/oh_my_rag/query_expansion.py#L113) and
+[_clean_alternates (query_expansion.py:131)](src/oh_my_rag/query_expansion.py#L131): keywords deduped and capped at
 `EXPANSION_MAX_KEYWORDS`, alternates that merely echo the question dropped, hard length
 limits on both.
 
@@ -165,15 +166,15 @@ The result is an [ExpandedQuery (query_expansion.py:50)](src/oh_my_rag/query_exp
 
 ### 2.2 Run both retrievers at once
 
-[HybridSearch.search (search/hybrid.py:58)](src/oh_my_rag/search/hybrid.py#L58) submits both branches to a long-lived two-thread pool
-created in [HybridSearch.__init__ (search/hybrid.py:31)](src/oh_my_rag/search/hybrid.py#L31).
+[HybridSearch.search (search/hybrid.py:63)](src/oh_my_rag/search/hybrid.py#L63) submits both branches to a long-lived two-thread pool
+created in [HybridSearch.__init__ (search/hybrid.py:34)](src/oh_my_rag/search/hybrid.py#L34).
 
 They genuinely overlap rather than time-slice: SQLite, Chroma's HNSW and torch all release
 the GIL inside their own native work. Measured cost of adding the lexical branch: **+0.3 ms
 median (+4%)**, of which the FTS query itself is ~0.1 ms — the rest is pool overhead. The
 pool is kept alive across queries so its threads retain their SQLite connections.
 
-Each branch is settled independently by [HybridSearch._settle (search/hybrid.py:49)](src/oh_my_rag/search/hybrid.py#L49). If FTS5 fails you
+Each branch is settled independently by [HybridSearch._settle (search/hybrid.py:54)](src/oh_my_rag/search/hybrid.py#L54). If FTS5 fails you
 get pure vector search — exactly the pre-hybrid behaviour. If Chroma fails you still get
 keyword results. Neither can take the other down.
 
@@ -215,7 +216,7 @@ scores sidesteps that entirely — which matters most here, where the dense mode
 its scores are not especially trustworthy.
 
 Lists arrive as [RankedList (search/fusion.py:8)](src/oh_my_rag/search/fusion.py#L8) values carrying a name and a weight, assembled in
-[HybridSearch.search (search/hybrid.py:58)](src/oh_my_rag/search/hybrid.py#L58):
+[HybridSearch.search (search/hybrid.py:63)](src/oh_my_rag/search/hybrid.py#L63):
 
 | List | Weight | Why |
 | --- | --- | --- |
@@ -238,13 +239,43 @@ The payoff, from a real `--debug` session:
 Slot 5 was rank **17** in the dense list and rank **1** in the lexical one. Vector search
 alone had buried it; fusion pulled it into the answer.
 
-### 2.6 Build the prompt and generate
+### 2.6 Rerank the survivors
 
-[Rag.build_prompt (rag.py:98)](src/oh_my_rag/rag.py#L98) wraps the question and the fused chunks in XML-ish tags, emitting
+Fusion ranks by *agreement between retrievers*, which is a proxy for relevance, not
+relevance itself. Both retrievers compare things computed independently — a query vector
+against passage vectors, query terms against an inverted index — so neither ever looks at
+the question and a passage **together**.
+
+[Reranker (search/rerank.py:13)](src/oh_my_rag/search/rerank.py#L13) does. A cross-encoder feeds the pair through one model and scores it
+jointly, which is why it reorders usefully and why it is far too slow to run over a whole
+corpus. It belongs exactly here: last, over a short list.
+
+With reranking on, fusion hands over `RERANK_CANDIDATES` instead of `TOP_K`, and the
+cross-encoder makes the final cut. It only ever reorders what retrieval already found.
+
+Measured on this corpus, over questions built from rare identifiers — the case a bigger
+semantic embedding model is *worst* at:
+
+| MRR@3 | RRF only | + reranker |
+| --- | --- | --- |
+| natural-language questions | 1.000 | 1.000 |
+| rare identifiers | 0.403 | **0.611** |
+
+It costs about 3 seconds. The single biggest factor is not the candidate count but the
+model's `max_seq_length`, which defaults to **40960** tokens — vastly more than a
+`CHUNK_SIZE`-token passage needs. Pinning it to `RERANK_MAX_TOKENS` took 20 candidates from
+8244 ms to 5281 ms at 512 and 2591 ms at 256, with the ordering essentially unchanged.
+
+Like every other stage, it degrades rather than fails: a model error leaves the fused
+ordering intact, and `RERANK_ENABLED = False` skips the model load entirely.
+
+### 2.7 Build the prompt and generate
+
+[Rag.build_prompt (rag.py:115)](src/oh_my_rag/rag.py#L115) wraps the question and the fused chunks in XML-ish tags, emitting
 each chunk as a delimited `<doc src="...">` block. (Earlier this joined chunks with `""`,
 which ran the last sentence of one document straight into the filename of the next.)
 
-[Rag.ask_llm (rag.py:113)](src/oh_my_rag/rag.py#L113) hands it to [chat (llm_client.py:49)](src/oh_my_rag/llm_client.py#L49), which POSTs to an OpenAI-compatible
+[Rag.ask_llm (rag.py:130)](src/oh_my_rag/rag.py#L130) hands it to [chat (llm_client.py:49)](src/oh_my_rag/llm_client.py#L49), which POSTs to an OpenAI-compatible
 `/chat/completions` endpoint, non-streaming, and cleans the reply with
 [strip_control_tokens (llm_client.py:35)](src/oh_my_rag/llm_client.py#L35).
 
@@ -278,15 +309,15 @@ field, so `content` is already clean; mlx-lm inlines it as `<think>` tags, which
 scrubbing above exists. Neither `think=False` nor a `/no_think` suffix is honoured by
 Ollama's OpenAI endpoint — `reasoning_effort` is.
 
-### 2.7 Watching it work
+### 2.8 Watching it work
 
 Retrieval that cannot be inspected cannot be tuned, so every stage can record itself into a
 [Trace (observability.py:23)](src/oh_my_rag/observability.py#L23) — timings, each retriever's ranked list, the FTS MATCH expression
 with how many chunks it matched before `LIMIT`, and the fused result with its arithmetic.
 
-It is deliberately **data, not printing**: [render_trace (runners/cli.py:100)](src/oh_my_rag/runners/cli.py#L100) formats it for the terminal,
+It is deliberately **data, not printing**: [render_trace (runners/cli.py:114)](src/oh_my_rag/runners/cli.py#L114) formats it for the terminal,
 and an MCP or web frontend could consume the same object. Tracing is opt-in via
-[Rag.prepare (rag.py:123)](src/oh_my_rag/rag.py#L123), and [HybridSearch.search (search/hybrid.py:58)](src/oh_my_rag/search/hybrid.py#L58) hands a branch recorder to the
+[Rag.prepare (rag.py:140)](src/oh_my_rag/rag.py#L140), and [HybridSearch.search (search/hybrid.py:63)](src/oh_my_rag/search/hybrid.py#L63) hands a branch recorder to the
 lexical retriever only while tracing, so a retriever implementing the minimal
 `search(terms, limit)` contract keeps working.
 
@@ -304,9 +335,9 @@ costs 3.8s, and the first generated token takes 17.7s because the prompt is ~16,
 characters and that is prompt *prefill*, not generation. `TOP_K` and `CHUNK_SIZE` set that
 prompt size, so they are the latency dials, not anything in `search/`.
 
-### 2.8 Streaming
+### 2.9 Streaming
 
-[Rag.prepare (rag.py:123)](src/oh_my_rag/rag.py#L123) and [Rag.stream_answer (rag.py:167)](src/oh_my_rag/rag.py#L167) are separate so a frontend can show
+[Rag.prepare (rag.py:140)](src/oh_my_rag/rag.py#L140) and [Rag.stream_answer (rag.py:184)](src/oh_my_rag/rag.py#L184) are separate so a frontend can show
 retrieval before generation begins. [chat_stream (llm_client.py:223)](src/oh_my_rag/llm_client.py#L223) reads the SSE stream and
 yields `delta.content` only — Ollama's separate `delta.reasoning` is ignored, matching the
 non-streaming path.
@@ -321,7 +352,7 @@ to zero when `LLM_REASONING_EFFORT` is `"none"` and no scratchpad can exist. Fuz
 the batch path over randomly split deltas, streamed output matches
 [strip_control_tokens (llm_client.py:35)](src/oh_my_rag/llm_client.py#L35) on every shape.
 
-### 2.9 The usage log
+### 2.10 The usage log
 
 The `Trace` above lives and dies with one question. [UsageLog (usage_log.py:32)](src/oh_my_rag/usage_log.py#L32) is the durable
 counterpart: every LLM call is appended to `./llm_usage.sqlite3`, a **fourth** store kept
@@ -350,7 +381,7 @@ question). Both are single-turn; neither is a conversation.
 ## Part 3 — When things go wrong
 
 Query expansion is the one step that talks to a language model before search, so it is the
-one most able to misbehave. [expand (query_expansion.py:168)](src/oh_my_rag/query_expansion.py#L168) guarantees it returns an
+one most able to misbehave. [expand (query_expansion.py:188)](src/oh_my_rag/query_expansion.py#L188) guarantees it returns an
 `ExpandedQuery` — it never raises, never returns `None`, never propagates an HTTP error.
 
 | Failure | Detected by | Result |
@@ -359,14 +390,14 @@ one most able to misbehave. [expand (query_expansion.py:168)](src/oh_my_rag/quer
 | Slow / hung generation | `EXPANSION_TIMEOUT` | full fallback |
 | Empty reply, or all `<think>` | length check after [strip_control_tokens (llm_client.py:35)](src/oh_my_rag/llm_client.py#L35) | full fallback |
 | Prose with no tagged lines | all three regexes miss, salvage declines | full fallback |
-| Untagged `a, b, c` list | [_looks_like_a_keyword_list (query_expansion.py:132)](src/oh_my_rag/query_expansion.py#L132) | **salvaged** as keywords |
+| Untagged `a, b, c` list | [_looks_like_a_keyword_list (query_expansion.py:152)](src/oh_my_rag/query_expansion.py#L152) | **salvaged** as keywords |
 | `KEYWORDS` only, no `ALT`s | two regexes miss | partial — dense side uses the original alone |
 | Punctuation-only keywords | alnum filter in [build_match_expr (search/fts.py:18)](src/oh_my_rag/search/fts.py#L18) | partial — lexical returns `[]` |
-| Too many keywords/alternates | caps in [_clean_keywords (query_expansion.py:93)](src/oh_my_rag/query_expansion.py#L93) | truncated |
+| Too many keywords/alternates | caps in [_clean_keywords (query_expansion.py:113)](src/oh_my_rag/query_expansion.py#L113) | truncated |
 
 A *full fallback* means the pipeline runs on the untouched question — precisely the
 behaviour before expansion existed. Every fallback logs its reason via
-[_fallback (query_expansion.py:226)](src/oh_my_rag/query_expansion.py#L226), and `expanded=False` travels with the query so `--debug` and
+[_fallback (query_expansion.py:246)](src/oh_my_rag/query_expansion.py#L246), and `expanded=False` travels with the query so `--debug` and
 MCP responses can distinguish a real expansion from a fallback. Silent degradation is what
 makes retrieval quality impossible to reason about later.
 
@@ -402,9 +433,9 @@ sentence-transformers during startup risks a timeout.
 
 **Diagnostics go to stderr, never stdout.** Under the stdio transport, stdout *is* the
 JSON-RPC channel. A single stray `print()` — say the one-line notice from
-[_fallback (query_expansion.py:226)](src/oh_my_rag/query_expansion.py#L226) when expansion degrades — lands in the middle of a protocol
+[_fallback (query_expansion.py:246)](src/oh_my_rag/query_expansion.py#L246) when expansion degrades — lands in the middle of a protocol
 frame and kills the request with a `JSONRPCMessage` validation error. Every diagnostic in
-[expand (query_expansion.py:168)](src/oh_my_rag/query_expansion.py#L168), [FtsIndex.search (search/fts.py:188)](src/oh_my_rag/search/fts.py#L188) and [HybridSearch._settle (search/hybrid.py:49)](src/oh_my_rag/search/hybrid.py#L49)
+[expand (query_expansion.py:188)](src/oh_my_rag/query_expansion.py#L188), [FtsIndex.search (search/fts.py:188)](src/oh_my_rag/search/fts.py#L188) and [HybridSearch._settle (search/hybrid.py:54)](src/oh_my_rag/search/hybrid.py#L54)
 passes `file=sys.stderr`. CLI output under `runners/` and in [seed_database (seed_database.py:72)](src/oh_my_rag/seed_database.py#L72)
 stays on stdout, because those never run under MCP.
 
@@ -497,19 +528,19 @@ trade latency for alternates.
 
 ## Extending it
 
-**A new frontend.** Write a module under `runners/` against the [Rag (rag.py:35)](src/oh_my_rag/rag.py#L35) class, the way
-[main (runners/cli.py:113)](src/oh_my_rag/runners/cli.py#L113) does. Nothing below `Rag` needs to know about it.
+**A new frontend.** Write a module under `runners/` against the [Rag (rag.py:36)](src/oh_my_rag/rag.py#L36) class, the way
+[main (runners/cli.py:128)](src/oh_my_rag/runners/cli.py#L128) does. Nothing below `Rag` needs to know about it.
 
 **A new retriever.** Return a list of [SearchHit (search/types.py:5)](src/oh_my_rag/search/types.py#L5) values with 1-based ranks, wrap it in a
 [RankedList (search/fusion.py:8)](src/oh_my_rag/search/fusion.py#L8) with a name and weight, and add it to the list assembled in
-[HybridSearch.search (search/hybrid.py:58)](src/oh_my_rag/search/hybrid.py#L58). Fusion does not care where a list came from.
+[HybridSearch.search (search/hybrid.py:63)](src/oh_my_rag/search/hybrid.py#L63). Fusion does not care where a list came from.
 
 **A new document type.** Add the suffix to `supported_formats` in
 [documents_loader.py](src/oh_my_rag/documents_loader.py) and teach [load (documents_loader.py:13)](src/oh_my_rag/documents_loader.py#L13)
 how to read it. Everything downstream works on plain text.
 
 **Reranking.** The natural next quality lever: run a cross-encoder over the fused `TOP_K`
-before [Rag.build_prompt (rag.py:98)](src/oh_my_rag/rag.py#L98). It costs a second model and real latency, which is why it
+before [Rag.build_prompt (rag.py:115)](src/oh_my_rag/rag.py#L115). It costs a second model and real latency, which is why it
 is not here.
 
 See [DESIGN.md](DESIGN.md) for the design rationale, the phase plan and the measurements

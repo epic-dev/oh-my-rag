@@ -37,7 +37,20 @@ stores.
 
 **Query** (`rag.Rag.answer_verbose`): `query_expansion.expand()` → `search.hybrid.HybridSearch`
 runs the dense and lexical branches on a 2-thread pool → `search.fusion.reciprocal_rank_fusion()`
-→ `Rag.build_prompt()` → `Rag.ask_llm()` → `llm_client.chat()`.
+→ `search.rerank.Reranker` cuts `RERANK_CANDIDATES` down to `TOP_K` → `Rag.build_prompt()` →
+`Rag.ask_llm()` → `llm_client.chat()`.
+
+### Three models, three jobs
+
+`EXPANSION_MODEL` (keywords), `LLM_MODEL` (answering) and `RERANK_MODEL` (reordering) are
+independent. `Rag.__init__` takes `expansion_model=` as well as `llm_model=` — passing only
+`llm_model=` used to change the answer path while expansion silently kept the config
+constant, so keep both threaded through. Reranking runs *inside* `HybridSearch`, after
+fusion, so MCP's `search_docs` benefits too.
+
+The cross-encoder's `max_seq_length` defaults to 40960 and dominates its cost; `Reranker`
+pins it to `RERANK_MAX_TOKENS`. Measured over 20 candidates: 8244ms at the default, 5281ms
+at 512, 2591ms at 256, with the ordering essentially unchanged.
 
 `runners/cli.py` and `mcp/server.py` are frontends over `Rag`; new ones should be too.
 

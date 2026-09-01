@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from oh_my_rag.config import (
     CHROMADB_PATH,
     EXPANSION_ENABLED,
+    EXPANSION_MODEL,
     LLM_BASE_URL,
     LLM_MAX_TOKENS,
     LLM_MODEL,
@@ -41,9 +42,15 @@ class Rag:
         llm_model: str = LLM_MODEL,
         top_k: int = TOP_K,
         expand_queries: bool = EXPANSION_ENABLED,
+        expansion_model: str = EXPANSION_MODEL,
     ):
         self.llm_base_url = llm_base_url
         self.llm_model = llm_model
+        # Held separately from llm_model on purpose: the two calls have different
+        # jobs and can run on different models. Passing llm_model= used to change
+        # only the answer path while expansion silently kept using the config
+        # constant, which is the kind of surprise this attribute removes.
+        self.expansion_model = expansion_model
         self.top_k = top_k
         self.expand_queries = expand_queries
 
@@ -62,10 +69,20 @@ class Rag:
     ) -> ExpandedQuery:
         enabled = self.expand_queries if expand_queries is None else expand_queries
         if trace is None:
-            return expand(query, base_url=self.llm_base_url, enabled=enabled)
+            return expand(
+                query,
+                base_url=self.llm_base_url,
+                model=self.expansion_model,
+                enabled=enabled,
+            )
 
         with trace.stage("expansion"):
-            expanded = expand(query, base_url=self.llm_base_url, enabled=enabled)
+            expanded = expand(
+                query,
+                base_url=self.llm_base_url,
+                model=self.expansion_model,
+                enabled=enabled,
+            )
         trace.expansion_reason = expanded.reason
         return expanded
 

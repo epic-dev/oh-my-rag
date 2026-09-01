@@ -2,7 +2,7 @@ import argparse
 import sys
 import time
 
-from oh_my_rag.config import CANDIDATE_K, RRF_K, TOP_K
+from oh_my_rag.config import CANDIDATE_K, RERANK_CANDIDATES, RRF_K, TOP_K
 from oh_my_rag.rag import Rag
 
 WIDTH = 78
@@ -87,8 +87,9 @@ def render_branches(trace, show: int) -> None:
 
 def render_fusion(trace) -> None:
     weights = {b.name: b.weight for b in trace.branches}
-    print(rule("fusion", f"RRF k={RRF_K} → top {TOP_K}"))
-    for i, hit in enumerate(trace.fused, start=1):
+    target = RERANK_CANDIDATES if "rerank" in trace.timings else TOP_K
+    print(rule("fusion", f"RRF k={RRF_K} → top {target}"))
+    for i, hit in enumerate(trace.fused[:TOP_K], start=1):
         parts = [
             f"{name}@{rank} ({weights.get(name, 1.0) / (RRF_K + rank):.5f})"
             for name, rank in sorted(hit.sources.items(), key=lambda kv: kv[1])
@@ -97,11 +98,25 @@ def render_fusion(trace) -> None:
         print(f"       = {' + '.join(parts)}")
 
 
+def render_rerank(trace, contexts) -> None:
+    if "rerank" not in trace.timings:
+        return
+    print(rule("rerank", f"cross-encoder, {len(trace.rerank_before)} shown of "
+                         f"{RERANK_CANDIDATES} rescored, {ms(trace.timings['rerank'])}"))
+    before = list(trace.rerank_before)
+    for i, hit in enumerate(contexts, start=1):
+        was = before.index(hit.chunk_uid) + 1 if hit.chunk_uid in before else None
+        moved = "  (new)" if was is None else ("" if was == i else f"  (was #{was})")
+        score = f"{hit.rerank_score:+.3f}" if hit.rerank_score is not None else "  -   "
+        print(f"  {i}. {short(hit.chunk_uid):<44} {score}{moved}")
+
+
 def render_trace(result, show: int) -> None:
     trace = result.trace
     render_expansion(result.expanded, trace)
     render_branches(trace, show)
     render_fusion(trace)
+    render_rerank(trace, result.contexts)
     print(rule("prompt"))
     print(f"  {trace.prompt_chars} chars across {len(result.contexts)} document block(s)")
     for w in trace.warnings:
@@ -120,6 +135,8 @@ def main() -> None:
     # timing, which makes --debug lie about steady-state cost.
     print("Loading models...", end="", flush=True)
     rag.search.vector.search(["warmup"], 1)
+    if rag.search.reranker is not None and rag.search.reranker.enabled:
+        rag.search.reranker.model
     print(" ready.  Ask a question, or /exit.")
 
     while True:

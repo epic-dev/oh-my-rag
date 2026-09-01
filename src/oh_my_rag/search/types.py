@@ -24,6 +24,9 @@ class FusedHit:
 
     `sources` maps a retriever's name to the 1-based rank it gave this chunk,
     which is what makes a fused result explainable in `--debug` output.
+
+    Frozen, so reranking rebuilds hits with `dataclasses.replace` rather than
+    mutating them.
     """
 
     chunk_uid: str
@@ -31,3 +34,6 @@ class FusedHit:
     text: str
     score: float
     sources: dict[str, int]
+    # Set when a cross-encoder rescored this chunk. `score` stays the RRF value
+    # so both rankings remain visible; ordering follows this when present.
+    rerank_score: float | None = None

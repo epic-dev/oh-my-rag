@@ -24,7 +24,8 @@ QUERY  (Rag class)
     -> concurrently, on two threads:
          - dense  : Chroma, question + rephrasings in one batched call
          - lexical: SQLite FTS5, bm25() over the keywords
-    -> fusion.reciprocal_rank_fusion()   RRF over the ranked lists -> TOP_K
+    -> fusion.reciprocal_rank_fusion()   RRF over the ranked lists -> RERANK_CANDIDATES
+    -> rerank.Reranker()                 cross-encoder rescores each pair -> TOP_K
     -> rag.build_prompt() -> local LLM  -> answer
 
 runners/cli.py:
@@ -163,11 +164,13 @@ All settings live in `src/oh_my_rag/config.py`:
 | `LLM_TIMEOUT` / `LLM_MAX_TOKENS` | Answer-call timeout, and the completion cap (mlx-lm defaults to only 512, which truncates answers) |
 | `LLM_REASONING_EFFORT` | `"none"` disables a reasoning model's scratchpad on the answer path. On qwen3.5:9b that is 23s vs 88s for equivalent answers |
 | `EMBEDDING_MODEL` | sentence-transformers model — must be downloaded locally first (`embeddings_model_loader.py`) |
+| `EXPANSION_MODEL` | Model for keyword generation — independent of `LLM_MODEL`, since expansion is a formatting task |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | Token-based chunk window/overlap (tiktoken `cl100k_base`) |
 | `CHROMADB_PATH` | Where the Chroma index is persisted |
 | `DATA_SOURCE_DIR` | Source documents folder |
 | `FTS_PATH` / `FTS_TOKENIZER` | Full-text index location and its FTS5 tokenizer |
 | `TOP_K` / `CANDIDATE_K` | Chunks sent to the LLM, and depth pulled per retriever before fusion |
+| `RERANK_*` | Cross-encoder reranking: on/off, model, how many candidates to rescore, and the token cap that dominates its cost |
 | `RRF_K` / `RRF_WEIGHT_*` | Fusion constant and the weight each ranked list carries |
 | `EXPANSION_*` | Query expansion: on/off, model, timeout, and the caps on its output |
 | `MCP_SERVER_NAME` / `MCP_HTTP_PORT` | MCP server identity and `--http` port |

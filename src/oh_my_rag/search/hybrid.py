@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from oh_my_rag.config import (
     CANDIDATE_K,
+    RERANK_CANDIDATES,
+    RERANK_ENABLED,
     RRF_WEIGHT_ALTERNATE,
     RRF_WEIGHT_FTS,
     RRF_WEIGHT_VECTOR,
@@ -11,6 +13,7 @@ from oh_my_rag.config import (
     TOP_K,
 )
 from oh_my_rag.search.fts import FtsIndex
+from oh_my_rag.search.rerank import Reranker
 from oh_my_rag.search.fusion import RankedList, reciprocal_rank_fusion
 from oh_my_rag.search.types import FusedHit, SearchHit
 from oh_my_rag.search.vector import VectorSearch
@@ -34,11 +37,13 @@ class HybridSearch:
         fts: FtsIndex | None = None,
         top_k: int = TOP_K,
         candidate_k: int = CANDIDATE_K,
+        reranker: Reranker | None = None,
     ):
         self.vector = vector if vector is not None else VectorSearch()
         self.fts = fts if fts is not None else FtsIndex()
         self.top_k = top_k
         self.candidate_k = candidate_k
+        self.reranker = reranker if reranker is not None else Reranker()
         # Long-lived: pool threads keep their SQLite connections between
         # queries, and per-query thread creation is pure overhead.
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ohmyrag-search")
@@ -92,7 +97,25 @@ class HybridSearch:
             )
         ranked.append(RankedList(name="fts", hits=fts_hits, weight=RRF_WEIGHT_FTS))
 
-        fused = reciprocal_rank_fusion(ranked, top_k=self.top_k)
+        # With reranking on, fusion hands over a deeper candidate list and the
+        # cross-encoder makes the final cut. Its job is to reorder what
+        # retrieval found, so it never sees more than retrieval returned.
+        reranking = self.reranker is not None and self.reranker.enabled
+        fuse_to = max(self.top_k, RERANK_CANDIDATES) if reranking else self.top_k
+        fused = reciprocal_rank_fusion(ranked, top_k=fuse_to)
+
+        if reranking:
+            import time as _time
+
+            fused_order = [h.chunk_uid for h in fused[: self.top_k]]
+            started_rerank = _time.perf_counter()
+            fused = self.reranker.rerank(expanded.original, fused, self.top_k)
+            rerank_ms = (_time.perf_counter() - started_rerank) * 1000
+            if trace is not None:
+                trace.record("rerank", rerank_ms)
+                trace.rerank_before = fused_order
+        else:
+            fused = fused[: self.top_k]
 
         if trace is not None:
             from oh_my_rag.observability import BranchTrace

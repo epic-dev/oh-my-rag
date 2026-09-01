@@ -45,7 +45,11 @@ DATA_SOURCE_DIR = "data/incoming"
 EXPANSION_ENABLED = True
 # Same mlx-lm server as answering; separate constant so a smaller/faster model
 # can be pointed at expansion without touching the answering path.
-EXPANSION_MODEL = LLM_MODEL
+# Expansion is a formatting task — extract nouns, rephrase twice — so it does not
+# need the answering model's capacity, and it sits on the critical path before
+# any search can start. A separate, much smaller model keeps that hop cheap.
+# Ollama keeps both resident, so alternating them per question is not a reload.
+EXPANSION_MODEL = "qwen3.5:0.8b"
 EXPANSION_TIMEOUT = 20.0
 EXPANSION_MAX_TOKENS = 200
 EXPANSION_MAX_KEYWORDS = 8
@@ -71,6 +75,22 @@ FTS_PATH = "./fts_index.sqlite3"
 # "accrual", "runner" do NOT merge). Verified against this SQLite build.
 # Changing this requires `uv run oh-my-rag --rebuild`.
 FTS_TOKENIZER = "porter unicode61 remove_diacritics 2"
+
+# --- Reranking ---------------------------------------------------------------
+# A cross-encoder scores (query, passage) pairs *jointly*, which a bi-encoder
+# cannot: retrieval compares two independently-computed vectors, so it never
+# sees the query and the passage together. Companion model to EMBEDDING_MODEL.
+RERANK_ENABLED = True
+RERANK_MODEL = "Qwen/Qwen3-Reranker-0.6B"
+# How many fused candidates to rescore. Fusion returns this many instead of
+# TOP_K when reranking is on; the reranker then cuts back down to TOP_K.
+RERANK_CANDIDATES = 12
+RERANK_BATCH_SIZE = 16
+# The model's own default is 40960 tokens, which is wildly more than a
+# CHUNK_SIZE-token passage needs and dominates the cost. Measured over 20
+# candidates: 8244ms at the default, 5281ms at 512, 2591ms at 256, with the
+# ordering essentially unchanged. 512 keeps most of a 700-token chunk.
+RERANK_MAX_TOKENS = 512
 
 # --- Hybrid search and fusion (STEP 3) ---------------------------------------
 TOP_K = 3
