@@ -180,3 +180,5 @@ Changing `LLM_MODEL` requires restarting the mlx-lm server with the new model.
 Changing `EMBEDDING_MODEL` requires re-downloading it and running
 `uv run oh-my-rag --rebuild`. Changing `FTS_TOKENIZER` also requires `--rebuild` —
 the code refuses to write into a mismatched index rather than let it degrade quietly.
+
+##### test pr
